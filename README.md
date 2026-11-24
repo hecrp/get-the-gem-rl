@@ -269,3 +269,7 @@ The suite covers the engine contract and determinism (including 100 000 seeded r
 ## Not yet
 
 Multiple seeds and confidence intervals for the PPO results, harder generalisation settings, pixel-based training, learning-curve plots, level editing for curricula (ACCEL-style `mutate`), and packaging as an installable library.
+
+## License
+
+[MIT](LICENSE).
