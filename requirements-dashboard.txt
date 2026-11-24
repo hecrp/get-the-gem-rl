@@ -1,0 +1,7 @@
+# Web dashboard (python -m dashboard), on top of requirements.txt. The server
+# process never imports torch; training/recording jobs run with the
+# interpreter that has requirements-train.txt (see docs/dashboard.md).
+fastapi==0.165.0
+uvicorn==0.54.0
+# Tests only (fastapi.testclient / live SSE tests).
+httpx==0.28.1
