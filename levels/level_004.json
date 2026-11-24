@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "name": "There and back",
+  "width": 240,
+  "height": 160,
+  "player_spawn": [60, 128],
+  "gem": [216, 132],
+  "exit": [16, 128],
+  "win_condition": "exit_with_gem",
+  "platforms": [[0, 144, 240, 16]],
+  "hazards": [],
+  "metadata": {"difficulty": 2}
+}

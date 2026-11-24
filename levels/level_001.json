@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "Walk",
+  "width": 240,
+  "height": 160,
+  "player_spawn": [
+    16,
+    128
+  ],
+  "gem": [
+    216,
+    132
+  ],
+  "platforms": [
+    [
+      0,
+      144,
+      240,
+      16
+    ]
+  ],
+  "hazards": [],
+  "metadata": {
+    "difficulty": 1
+  }
+}

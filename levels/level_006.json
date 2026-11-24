@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "Pit, twice",
+  "width": 240,
+  "height": 160,
+  "player_spawn": [40, 128],
+  "gem": [216, 100],
+  "exit": [8, 128],
+  "win_condition": "exit_with_gem",
+  "platforms": [
+    [0, 144, 88, 16],
+    [128, 144, 112, 16],
+    [196, 116, 44, 8]
+  ],
+  "hazards": [[150, 140, 24, 4]],
+  "metadata": {"difficulty": 4}
+}

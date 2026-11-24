@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "name": "Up and down",
+  "width": 240,
+  "height": 160,
+  "player_spawn": [32, 128],
+  "gem": [206, 40],
+  "exit": [8, 128],
+  "win_condition": "exit_with_gem",
+  "platforms": [
+    [0, 144, 240, 16],
+    [56, 116, 48, 8],
+    [124, 88, 48, 8],
+    [188, 60, 44, 8]
+  ],
+  "hazards": [],
+  "metadata": {"difficulty": 3}
+}
