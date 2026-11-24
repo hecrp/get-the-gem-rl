@@ -211,7 +211,7 @@ Limits: trajectory responses up to 8 MB (else `413`), `limit` up to 500, request
 
 ## Engine and RL extensions
 
-Phase 5 extended the core only additively; physics, actions, level formats, the generator and its output are unchanged (`GENERATOR_VERSION` and the golden hashes are untouched), and the benchmark is unchanged within noise.
+The dashboard extended the core only additively; physics, actions, level formats, the generator and its output are unchanged (`GENERATOR_VERSION` and the golden hashes are untouched), and the benchmark is unchanged within noise.
 
 | Where | Addition |
 | --- | --- |

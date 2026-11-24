@@ -50,7 +50,7 @@ def preset_name(config: GenConfig) -> str | None:
 
 
 def pcg_ref(seed: int, config: GenConfig, preset: str | None = None) -> dict:
-    """JSON-native provenance of a generated level (spec 13 §91.1 ``LevelRef``):
+    """JSON-native provenance of a generated level (``LevelRef``):
     the full config is kept because presets may change over time."""
     return {'kind': 'pcg', 'preset': preset if preset is not None else preset_name(config),
             'seed': seed, 'config': _config_dict(config),

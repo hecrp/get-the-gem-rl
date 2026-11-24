@@ -33,7 +33,7 @@ BUILTIN_DIR = ROOT / 'levels'
 SOLUTIONS_DIR = BUILTIN_DIR / 'solutions'
 REFERENCE_RUN = '_reference'
 
-# Config keys that do not define an experiment (R-16 default grouping).
+# Config keys that do not define an experiment (default grouping).
 NON_EXPERIMENT_KEYS = {
     'seed', 'name', 'threads', 'device', 'log_every', 'runs_dir', 'resume',
     'ckpt_every', 'ckpt_keep', 'ckpt_thin', 'replay_every', 'replay_n', 'group',
@@ -197,7 +197,7 @@ class Run:
         return group_of(self.config, self.status)
 
     def state(self) -> dict:
-        """State with dead detection (R-10): a ``running`` run whose pid is gone
+        """State with dead detection: a ``running`` run whose pid is gone
         or whose heartbeat is older than 3x the observed interval (>= 120 s)."""
         st = self.status
         if st is None:
@@ -419,7 +419,7 @@ def _public(e: dict) -> dict:
 # -- the store ----------------------------------------------------------------------
 
 class LRU:
-    """Byte-bounded LRU for gzip trajectories (R-21)."""
+    """Byte-bounded LRU for gzip trajectories."""
 
     def __init__(self, max_bytes: int):
         self.max_bytes = max_bytes
@@ -521,7 +521,7 @@ class Store:
                 self._levels.popitem(last=False)
 
     def resolve(self, ref: dict | None, digest: str | None = None):
-        """``(level, drift, source)`` for a ``LevelRef`` and expected hash (R-03).
+        """``(level, drift, source)`` for a ``LevelRef`` and expected hash.
 
         The ref is regenerated (built-in file or ``pcg.generate_level``); if its
         hash differs from ``digest`` (or it cannot be regenerated) the snapshot
@@ -613,7 +613,7 @@ class Store:
             e['broken'] = why
 
     def trajectory(self, rec: dict, cam: str = 'none') -> tuple[bytes, dict]:
-        """Gzip JSON of the trajectory (spec 13 §91.5) and a small header dict."""
+        """Gzip JSON of the trajectory and a small header dict."""
         rid = rec['id']
         lvl = rec.get('level') or {}
         key = (rid, lvl.get('hash'), cam, canonical_json(rec.get('actions', [])))

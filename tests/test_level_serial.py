@@ -1,4 +1,4 @@
-"""Level.to_dict / level_hash / canonical_json (spec 13 §92 E-1)."""
+"""Level.to_dict / level_hash / canonical_json."""
 import json
 import subprocess
 import sys

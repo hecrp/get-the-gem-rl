@@ -1,4 +1,4 @@
-"""Statistics for the dashboard, standard library only (spec 13 §96).
+"""Statistics for the dashboard, standard library only.
 
 Every proportion is reported with its sample size and a 95 % interval:
 Wilson for one proportion, Newcombe (hybrid score, method 10) for a

@@ -1,4 +1,4 @@
-"""Jobs: whitelist vs the real CLIs, lifecycle, queue limits, adoption (spec 13 §97)."""
+"""Jobs: whitelist vs the real CLIs, lifecycle, queue limits, adoption."""
 import json
 import os
 import subprocess

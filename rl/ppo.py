@@ -44,7 +44,7 @@ from game.replay_store import append_jsonl, atomic_write_json
 from .env import GRID_CHANNELS, VEC_FIELDS, GemEnv
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_START_SEED = 1_000_000          # spec 11: [0, 1e6) train, [1e6, 2e6) test
+TEST_START_SEED = 1_000_000          # [0, 1e6) train, [1e6, 2e6) test
 
 
 # -- model ---------------------------------------------------------------------

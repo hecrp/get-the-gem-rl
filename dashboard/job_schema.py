@@ -1,4 +1,4 @@
-"""Whitelist of job flags with type, range and default (spec 13 §97, R-14).
+"""Whitelist of job flags with type, range and default.
 
 Nothing from a request is ever interpreted by a shell: a validated job becomes
 an argument list for ``subprocess.Popen``. Unknown keys, wrong types, values

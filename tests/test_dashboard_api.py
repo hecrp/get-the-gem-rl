@@ -1,4 +1,4 @@
-"""Dashboard read API (spec 13 §94, tests 12, 17)."""
+"""Dashboard read API."""
 import gzip
 import json
 

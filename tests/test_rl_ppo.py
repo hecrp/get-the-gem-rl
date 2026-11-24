@@ -24,7 +24,7 @@ def test_ppo_runs_end_to_end(tmp_path, monkeypatch, extra):
                            '--device', 'cpu', '--threads', '1', '--name', 'smoke'])
     result = ppo.train(args)
     out = tmp_path / 'runs' / 'smoke'
-    # status.json and metrics.jsonl are always written since spec 13 (§93.2);
+    # status.json and metrics.jsonl are always written (observable training);
     # the four original files keep their format.
     assert {p.name for p in out.iterdir()} == {'config.json', 'progress.csv',
                                                'eval.json', 'model.pt',

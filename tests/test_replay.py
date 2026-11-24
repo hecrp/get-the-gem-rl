@@ -1,4 +1,4 @@
-"""game.replay: RLE, simulate(), events and the reference replays (spec 13 §92 E-2/E-3)."""
+"""game.replay: RLE, simulate(), events and the reference replays."""
 import random
 from pathlib import Path
 

@@ -88,7 +88,7 @@ class Trajectory:
     final_state: object             # game.GameState
 
     def outcome(self) -> dict:
-        """The replay ``outcome`` block (spec 13 §91.3) without ``return``."""
+        """The replay ``outcome`` block without ``return``."""
         return {'result': self.result, 'end_reason': self.end_reason,
                 'engine_steps': self.engine_steps, 'env_steps': self.env_steps,
                 'gem_step': self.gem_step, 'win_step': self.win_step,
@@ -183,7 +183,7 @@ def resolved_max_steps(level: Level, max_steps=FROM_LEVEL):
 
 
 def simulate_replay(replay: dict, level: Level, record: bool = True) -> Trajectory:
-    """``simulate`` driven by a replay dict (spec 13 §91.3): only ``env`` and
+    """``simulate`` driven by a replay dict: only ``env`` and
     ``actions`` matter; ``n`` and ``created`` never influence it."""
     env = replay.get('env') or {}
     max_steps = env.get('max_steps', FROM_LEVEL)

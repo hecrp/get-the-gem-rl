@@ -384,7 +384,7 @@ class Level:
         except ValueError as exc:
             raise ValueError(f'{path}: {exc}') from exc
 
-# -- canonical serialisation (spec 13 §92 E-1) ----------------------------------
+# -- canonical serialisation ----------------------------------
 
 def canonical_json(obj) -> str:
     """The one canonical JSON text used for hashing levels: sorted keys, no

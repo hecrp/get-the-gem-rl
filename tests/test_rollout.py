@@ -1,4 +1,4 @@
-"""rl.rollout: replays, numbering under concurrency, level store, verify, sweeps (spec 13 test 9)."""
+"""rl.rollout: replays, numbering under concurrency, level store, verify, sweeps."""
 import json
 import multiprocessing as mp
 import subprocess

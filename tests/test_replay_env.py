@@ -1,4 +1,4 @@
-"""GemEnv <-> game.replay.simulate equivalence and info['level_ref'] (spec 13 tests 7-8)."""
+"""GemEnv <-> game.replay.simulate equivalence and info['level_ref']."""
 import json
 from pathlib import Path
 

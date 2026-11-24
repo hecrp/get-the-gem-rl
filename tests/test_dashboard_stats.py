@@ -1,4 +1,4 @@
-"""dashboard.stats: LTTB, Wilson, Newcombe, bootstrap (spec 13 tests 13-14).
+"""dashboard.stats: LTTB, Wilson, Newcombe, bootstrap.
 
 Reference intervals are literal values published in Newcombe (1998),
 "Two-sided confidence intervals for the single proportion" and "Interval

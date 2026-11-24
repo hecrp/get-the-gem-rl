@@ -1,4 +1,4 @@
-"""Aggregates for sweeps and experiment groups (spec 13 §96), computed server-side."""
+"""Aggregates for sweeps and experiment groups, computed server-side."""
 from __future__ import annotations
 
 import math

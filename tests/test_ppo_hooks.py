@@ -1,5 +1,5 @@
 """rl.ppo observability: status.json, metrics.jsonl, checkpoints, replays,
---resume, SIGTERM and bit-exact behaviour without flags (spec 13 test 10)."""
+--resume, SIGTERM and bit-exact behaviour without flags."""
 import csv
 import json
 import os
@@ -51,7 +51,7 @@ def test_status_and_metrics_always_written(tmp_path):
 
 
 @pytest.mark.slow
-def test_no_flags_progress_identical_to_pre_phase5_run(tmp_path):
+def test_no_flags_progress_identical_to_pre_dashboard_run(tmp_path):
     meta = json.loads((FIXTURES / 'ppo_golden_meta.json').read_text())
     here = {'torch': torch.__version__, 'machine': platform.machine(),
             'system': platform.system(), 'python': platform.python_version()}

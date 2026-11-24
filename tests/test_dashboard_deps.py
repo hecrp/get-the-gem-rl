@@ -1,4 +1,4 @@
-"""Dependency rules of spec 13 (I5, §90): the server never imports torch, numpy,
+"""Dependency rules: the server never imports torch, numpy,
 pygame or rl; game/ and pcg/ stay stdlib-only; rl/ never imports dashboard/."""
 import ast
 import subprocess

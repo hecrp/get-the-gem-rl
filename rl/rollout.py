@@ -5,7 +5,7 @@
     python -m rl.rollout --run tiny_n10_shaped_s1 --mode sweep --tag test1k \\
         --preset tiny --start-seed 1000000 --num 1000
 
-A replay is ``level + actions`` (spec 13 §91.3): the episode can be rebuilt
+A replay is ``level + actions``: the episode can be rebuilt
 exactly with ``game.replay.simulate``, which ``--verify`` (on by default in
 ``replays`` mode) checks for every episode. Several ``GemEnv`` run side by side
 with one batched network call per step and no autoreset; the level of each

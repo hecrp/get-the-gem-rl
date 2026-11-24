@@ -277,7 +277,7 @@ The file format is described in [Levels](levels.md).
 
 ## Serialisation, end reasons and replays
 
-Additive helpers (spec 13); none of them changes `step()` or the state objects.
+Additive helpers; none of them changes `step()` or the state objects.
 
 - `Level.to_dict()` returns JSON-native data such that `Level.from_dict(level.to_dict())` is an equal level (tile levels keep their tiles, as `pcg.level_to_dict` does; others use rectangles). `game.level.canonical_json(obj)` is `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` and `game.level.level_hash(level)` is `"sha256:" + hexdigest` of the canonical text: a content address that is stable across processes and Python versions.
 - `Game.end_reason` is `None` while the episode runs, else `'hazard'`, `'fall'` (dead with the player below the world), `'won'` or `'timeout'`, derived from existing state with the precedence dead > won > timeout.

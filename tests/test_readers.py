@@ -1,4 +1,4 @@
-"""Tolerant readers and atomic writers (spec 13 R-09, test 11)."""
+"""Tolerant readers and atomic writers."""
 import json
 import threading
 

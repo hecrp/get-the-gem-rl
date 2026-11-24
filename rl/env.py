@@ -112,7 +112,7 @@ def _builtin_by_hash() -> dict[str, int]:
 
 
 def level_ref(hint, level: Level) -> dict:
-    """JSON-native provenance of ``level`` (spec 13 §91.1 ``LevelRef``).
+    """JSON-native provenance of ``level`` (``LevelRef``).
 
     ``{"kind": "builtin", "n": k}`` for built-in numbers, their paths or an
     equal ``Level``; ``{"kind": "pcg", ...}`` for a ``Level`` that carries

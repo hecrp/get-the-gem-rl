@@ -1,4 +1,4 @@
-// Pixel rules shared with the pygame renderer (spec 13 R-08, C-20).
+// Pixel rules shared with the pygame renderer.
 // Positions round with floor(v + 0.5); polygons are filled with pygame-ce's
 // scanline rule, ported exactly (verified against pygame in
 // tests/dashboard_js/raster.test.mjs with fixtures rendered by pygame).
