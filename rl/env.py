@@ -55,24 +55,94 @@ def _load_level(source) -> Level:
     raise TypeError(f'level: expected Level, int or path, got {source!r}')
 
 
-def _level_sampler(levels):
-    """Normalise ``levels`` to ``sample(np_random) -> Level``.
+def _level_source(levels):
+    """Normalise ``levels`` to ``sample(np_random) -> (Level, hint)``.
 
     Accepts one level (``Level``, built-in number, path), a sequence of them,
     or any source exposing ``sample(rng)`` such as ``pcg.LevelDistribution``
-    and ``pcg.LevelPack``.
+    and ``pcg.LevelPack``. ``hint`` is what ``level_ref`` needs to describe
+    where the level came from: the source's ``last_ref`` dict, or the original
+    number/path/``Level``. The RNG draws are exactly those of the level choice.
     """
     if hasattr(levels, 'sample'):
-        return levels.sample
+        def sample(rng):
+            level = levels.sample(rng)
+            ref = getattr(levels, 'last_ref', None)
+            return level, (dict(ref) if isinstance(ref, dict) else level)
+        return sample
     if isinstance(levels, (list, tuple)):
         if not levels:
             raise ValueError('levels: empty sequence')
-        loaded = tuple(_load_level(s) for s in levels)
+        loaded = tuple((_load_level(s), s) for s in levels)
         if len(loaded) == 1:
             return lambda rng: loaded[0]
         return lambda rng: loaded[int(rng.integers(len(loaded)))]
-    level = _load_level(levels)
-    return lambda rng: level
+    pair = (_load_level(levels), levels)
+    return lambda rng: pair
+
+
+def _level_sampler(levels):
+    """``sample(np_random) -> Level`` (kept for callers of the old helper)."""
+    sample = _level_source(levels)
+    return lambda rng: sample(rng)[0]
+
+
+def _copy_ref(ref):
+    """A fresh copy per call (Gymnasium forbids infos that share objects);
+    refs are flat except for the pcg ``config`` dict."""
+    if ref is None:
+        return None
+    out = dict(ref)
+    config = out.get('config')
+    if isinstance(config, dict):
+        out['config'] = dict(config)
+    return out
+
+
+_BUILTIN_BY_HASH: dict[str, int] | None = None
+
+
+def _builtin_by_hash() -> dict[str, int]:
+    global _BUILTIN_BY_HASH
+    if _BUILTIN_BY_HASH is None:
+        from game.level import level_hash
+        _BUILTIN_BY_HASH = {level_hash(Level.from_json(p)): i
+                            for i, p in enumerate(BUILTIN_LEVELS, 1)}
+    return _BUILTIN_BY_HASH
+
+
+def level_ref(hint, level: Level) -> dict:
+    """JSON-native provenance of ``level`` (spec 13 §91.1 ``LevelRef``).
+
+    ``{"kind": "builtin", "n": k}`` for built-in numbers, their paths or an
+    equal ``Level``; ``{"kind": "pcg", ...}`` for a ``Level`` that carries
+    current-generator metadata; otherwise ``{"kind": "custom", "hash": ...}``,
+    resolvable only through a level store. ``hint`` may already be a ref dict.
+    """
+    if isinstance(hint, dict):
+        return hint
+    if isinstance(hint, int) and not isinstance(hint, bool):
+        return {'kind': 'builtin', 'n': hint}
+    if isinstance(hint, (str, Path)):
+        path = Path(hint).resolve()
+        for i, builtin in enumerate(BUILTIN_LEVELS, 1):
+            if path == builtin.resolve():
+                return {'kind': 'builtin', 'n': i}
+    from game.level import level_hash
+    digest = level_hash(level)
+    n = _builtin_by_hash().get(digest)
+    if n is not None:
+        return {'kind': 'builtin', 'n': n}
+    gen = level._metadata.get('generator')
+    if isinstance(gen, dict) and 'seed' in gen and isinstance(gen.get('config'), dict):
+        from pcg import GENERATOR_VERSION, GenConfig, pcg_ref
+        if gen.get('version') == GENERATOR_VERSION and level.name == (
+                f'gen-v{GENERATOR_VERSION}-{gen["seed"]}'):
+            try:
+                return pcg_ref(gen['seed'], GenConfig(**gen['config']))
+            except (TypeError, ValueError):
+                pass
+    return {'kind': 'custom', 'hash': digest}
 
 
 def _rasterize(level: Level, pad_x: int, pad_y: int) -> np.ndarray:
@@ -175,7 +245,7 @@ class GemEnv(gym.Env):
         if view not in ('follow', 'full_small'):
             raise ValueError("view: expected 'follow' or 'full_small'")
 
-        self._sample_level = _level_sampler(levels)
+        self._sample_level = _level_source(levels)
         self.obs_mode = obs_mode
         self.grid_size = (cols, rows)
         self.view = view
@@ -191,6 +261,8 @@ class GemEnv(gym.Env):
         self._pad = (cols // 2, rows // 2)
         self._grids: OrderedDict[int, tuple[Level, np.ndarray]] = OrderedDict()
         self._grid_cache_size = level_cache_size
+        self._refs: OrderedDict[int, tuple[Level, dict]] = OrderedDict()
+        self._level_ref: dict | None = None
         self._obs_renderer = None
         self._human_renderer = None
         self.game: Game | None = None
@@ -218,17 +290,43 @@ class GemEnv(gym.Env):
             self._grids.popitem(last=False)
         return grid
 
+    def _ref_for(self, level: Level, hint) -> dict:
+        """``level_ref`` with a per-``Level`` cache (hashing is not free)."""
+        if isinstance(hint, dict):
+            return hint
+        if isinstance(hint, int) and not isinstance(hint, bool):
+            return {'kind': 'builtin', 'n': hint}
+        key = id(level)
+        hit = self._refs.get(key)
+        if hit is not None and hit[0] is level:
+            self._refs.move_to_end(key)
+            return hit[1]
+        ref = level_ref(hint, level)
+        self._refs[key] = (level, ref)
+        if len(self._refs) > self._grid_cache_size:
+            self._refs.popitem(last=False)
+        return ref
+
     @property
     def level(self) -> Level:
         return self.game.level
+
+    @property
+    def level_ref(self) -> dict | None:
+        """``LevelRef`` of the current level (also ``info["level_ref"]``)."""
+        return self._level_ref
 
     # -- gymnasium API -----------------------------------------------------
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         options = options or {}
-        level = (_load_level(options['level']) if 'level' in options
-                 else self._sample_level(self.np_random))
+        if 'level' in options:
+            hint = options['level']
+            level = _load_level(hint)
+        else:
+            level, hint = self._sample_level(self.np_random)
+        self._level_ref = self._ref_for(level, hint)
         if self.game is None:
             self.game = Game(level, seed=seed, max_steps=self._max_steps)
         else:
@@ -396,4 +494,5 @@ class GemEnv(gym.Env):
             'has_gem': game.has_gem,
             'gem_collected_event': gem_event,
             'is_success': game.is_won,
+            'level_ref': _copy_ref(self._level_ref),
         }

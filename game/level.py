@@ -292,6 +292,13 @@ class Level:
         """Ascending, deduplicated indices of hazards near (a margin around) the AABB."""
         return self._indices_near(x, y, w, h, 3)
 
+    def to_dict(self) -> dict:
+        """JSON-native dict such that ``Level.from_dict(level.to_dict())`` is
+        an equal level: tiles levels keep their tiles (the same dict as
+        ``pcg.level_to_dict`` for generated levels), others use rectangles
+        ``[x, y, w, h]`` with gem/exit as ``[x, y]``. See ``level_hash``."""
+        return _level_to_dict(self)
+
     @classmethod
     def from_dict(cls, data: dict) -> 'Level':
         try:
@@ -376,3 +383,66 @@ class Level:
             return cls.from_dict(data)
         except ValueError as exc:
             raise ValueError(f'{path}: {exc}') from exc
+
+# -- canonical serialisation (spec 13 §92 E-1) ----------------------------------
+
+def canonical_json(obj) -> str:
+    """The one canonical JSON text used for hashing levels: sorted keys, no
+    insignificant whitespace, UTF-8 (non-ASCII kept as is)."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _num(v: float):
+    """Integral floats are written as ints (``16`` rather than ``16.0``) so a
+    round trip through ``from_dict`` (which stores floats) is exact and the
+    canonical text matches the hand-written JSON files."""
+    return int(v) if float(v).is_integer() else v
+
+
+def _rect_list(r) -> list:
+    return [_num(r.x), _num(r.y), _num(r.w), _num(r.h)]
+
+
+def _level_to_dict(level: 'Level') -> dict:
+    if level.tiles is not None:
+        # Tiles carry the geometry; anything given explicitly on top of the
+        # tiles (``from_dict`` appends it after the tile-derived rectangles,
+        # and spawn/gem/exit when the tiles lack P/G/D) is kept explicitly.
+        (_, _, t_spawn, t_gem, t_exit, t_platforms, t_hazards) = _parse_tiles(level.tiles)
+        out = {'version': level.version, 'name': level.name, 'tile_size': TILE_SIZE,
+               'win_condition': level.win_condition, 'max_steps': level.max_steps,
+               'tiles': list(level.tiles), 'metadata': level.metadata}
+        extra_platforms = level.platforms[len(t_platforms):]
+        extra_hazards = level.hazards[len(t_hazards):]
+        if extra_platforms:
+            out['platforms'] = [_rect_list(p) for p in extra_platforms]
+        if extra_hazards:
+            out['hazards'] = [_rect_list(h) for h in extra_hazards]
+        if t_spawn is None:
+            out['player_spawn'] = [_num(v) for v in level.player_spawn]
+        if t_gem is None:
+            out['gem'] = [_num(level.gem.x), _num(level.gem.y)]
+        if t_exit is None and level.exit is not None:
+            out['exit'] = [_num(level.exit.x), _num(level.exit.y)]
+    else:
+        out = {'version': level.version, 'name': level.name,
+               'width': level.width, 'height': level.height,
+               'player_spawn': [_num(v) for v in level.player_spawn],
+               'gem': [_num(level.gem.x), _num(level.gem.y)],
+               'platforms': [_rect_list(p) for p in level.platforms],
+               'hazards': [_rect_list(h) for h in level.hazards],
+               'win_condition': level.win_condition,
+               'max_steps': level.max_steps,
+               'metadata': level.metadata}
+        if level.exit is not None:
+            out['exit'] = [_num(level.exit.x), _num(level.exit.y)]
+    for key, value in level.extras.items():
+        out.setdefault(key, value)
+    return out
+
+
+def level_hash(level: 'Level') -> str:
+    """Content address of a level: ``"sha256:" + hexdigest`` of its canonical JSON."""
+    import hashlib
+    return 'sha256:' + hashlib.sha256(
+        canonical_json(level.to_dict()).encode('utf-8')).hexdigest()

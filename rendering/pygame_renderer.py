@@ -13,18 +13,15 @@ from game.camera import compute_viewport, round_half_up
 if TYPE_CHECKING:
     from game import Game
 
-BACKGROUND = (24, 29, 48)
-VOID = (0, 0, 0)
-PLATFORM = (67, 80, 103)
-PLATFORM_TOP = (114, 170, 137)
-PLAYER = (255, 209, 102)
-PLAYER_DEAD = (180, 70, 91)
-PLAYER_WON = (146, 235, 162)
-HAZARD = (239, 91, 91)
-GEM = (91, 228, 233)
-EXIT = (116, 94, 160)
-EXIT_EDGE = (48, 39, 67)
-EXIT_INTERIOR = (217, 241, 226)
+from .palette import (BACKGROUND, CARRIED_GEM_OFFSET, DOOR_EDGE_WIDTH,  # noqa: F401
+                      DOOR_KEY_OFFSET, EXIT, EXIT_EDGE, EXIT_INTERIOR, GEM,
+                      GEM_POLYGON, HAZARD, PLATFORM, PLATFORM_TOP, PLATFORM_TOP_H,
+                      PLAYER, PLAYER_DEAD, PLAYER_SIZE, PLAYER_WON,
+                      SMALL_GEM_POLYGON, SPIKE_PERIOD, VOID, spike_polygon)
+
+
+def _poly(points, ox, oy):
+    return [(ox + x, oy + y) for x, y in points]
 
 
 class ViewMode(Enum):
@@ -83,15 +80,12 @@ class PygameRenderer:
                 box = _rect(platform)
                 pygame.draw.rect(surf, PLATFORM, box)
                 pygame.draw.rect(surf, PLATFORM_TOP,
-                                 (box.x, box.y, box.w, min(2, box.h)))
+                                 (box.x, box.y, box.w, min(PLATFORM_TOP_H, box.h)))
             for hazard in level.hazards:
                 box = _rect(hazard)
-                for x in range(box.left, box.right, 8):
-                    right = min(x + 7, box.right - 1)
-                    tip = min(x + 4, right)
+                for x in range(box.left, box.right, SPIKE_PERIOD):
                     pygame.draw.polygon(surf, HAZARD,
-                                        [(x, box.bottom - 1), (tip, box.top),
-                                         (right, box.bottom - 1)])
+                                        spike_polygon(x, box.top, box.bottom, box.right))
             self._static_level = level
             self._static_surface = surf
         return self._static_surface
@@ -132,28 +126,24 @@ class PygameRenderer:
             opened = getattr(state, 'exit_open', False) and not decorative
             edge = GEM if collected else EXIT_EDGE
             pygame.draw.rect(canvas, EXIT_INTERIOR if opened else EXIT, door)
-            pygame.draw.rect(canvas, edge, door, width=1)
+            pygame.draw.rect(canvas, edge, door, width=DOOR_EDGE_WIDTH)
             if not opened:
-                x, y = door.x + 4, door.y + 6
                 pygame.draw.polygon(canvas, edge,
-                                    [(x + 1, y), (x + 3, y + 1),
-                                     (x + 2, y + 3), (x, y + 2)])
+                                    _poly(SMALL_GEM_POLYGON, door.x + DOOR_KEY_OFFSET[0],
+                                          door.y + DOOR_KEY_OFFSET[1]))
         if not state.gem_collected:
             x = round_half_up(state.gem_x) - cam_x
             y = round_half_up(state.gem_y) - cam_y
-            pygame.draw.polygon(canvas, GEM,
-                                [(x + 3, y), (x + 7, y + 3),
-                                 (x + 4, y + 7), (x, y + 4)])
+            pygame.draw.polygon(canvas, GEM, _poly(GEM_POLYGON, x, y))
         px = round_half_up(state.player_x) - cam_x
         py = round_half_up(state.player_y) - cam_y
-        player = pygame.Rect(px, py, 12, 16)
+        player = pygame.Rect(px, py, *PLAYER_SIZE)
         color = PLAYER_DEAD if not state.alive else PLAYER_WON if state.won else PLAYER
         pygame.draw.rect(canvas, color, player)
         if state.gem_collected:
-            cx, cy = px + 4, py - 4
             pygame.draw.polygon(canvas, GEM,
-                                [(cx + 1, cy), (cx + 3, cy + 1),
-                                 (cx + 2, cy + 3), (cx, cy + 2)])
+                                _poly(SMALL_GEM_POLYGON, px + CARRIED_GEM_OFFSET[0],
+                                      py + CARRIED_GEM_OFFSET[1]))
         return canvas
 
     def _downscaled(self, frame: np.ndarray) -> np.ndarray:

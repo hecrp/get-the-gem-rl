@@ -62,6 +62,20 @@ class Game:
         return self.is_dead or self.is_won or self.is_timeout
 
     @property
+    def end_reason(self) -> str | None:
+        """Why the episode ended, derived from existing state (no new fields,
+        no cost in ``step``): ``None`` while running, else ``'hazard'``,
+        ``'fall'``, ``'won'`` or ``'timeout'``, with precedence dead > won >
+        timeout. A fall is a death with the player below the world."""
+        if not self.player.alive:
+            return 'fall' if self.player.y > self.level.height else 'hazard'
+        if self._won:
+            return 'won'
+        if self._timeout:
+            return 'timeout'
+        return None
+
+    @property
     def has_gem(self) -> bool:
         return self._gem_collected
 

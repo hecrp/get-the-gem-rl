@@ -17,6 +17,7 @@ from .generator import (
     GenFail,
     GenerationError,
     Ledge,
+    _config_dict,
     generate_level,
     level_to_dict,
 )
@@ -27,6 +28,7 @@ __all__ = [
     'generate_level', 'GenConfig', 'GenFail', 'GenerationError',
     'GENERATOR_VERSION', 'LevelDistribution', 'LevelPack', 'PRESETS',
     'JumpTable', 'build_jump_table', 'LevelMetrics', 'metrics', 'level_to_dict',
+    'pcg_ref', 'preset_name',
 ]
 
 PRESETS: dict[str, GenConfig] = {
@@ -37,6 +39,22 @@ PRESETS: dict[str, GenConfig] = {
     'large': GenConfig(cols=120, rows=80),
     'huge': GenConfig(cols=240, rows=160, difficulty=0.7),
 }
+
+
+def preset_name(config: GenConfig) -> str | None:
+    """The name of the preset whose config equals ``config``, else ``None``."""
+    for name, preset in PRESETS.items():
+        if preset == config:
+            return name
+    return None
+
+
+def pcg_ref(seed: int, config: GenConfig, preset: str | None = None) -> dict:
+    """JSON-native provenance of a generated level (spec 13 §91.1 ``LevelRef``):
+    the full config is kept because presets may change over time."""
+    return {'kind': 'pcg', 'preset': preset if preset is not None else preset_name(config),
+            'seed': seed, 'config': _config_dict(config),
+            'generator_version': GENERATOR_VERSION}
 
 
 def _draw(rng, bound: int | None) -> int:
@@ -62,7 +80,7 @@ class LevelDistribution:
     """
 
     def __init__(self, config: GenConfig, start_seed: int = 0, num_levels: int = 0,
-                 cache_size: int = 256):
+                 cache_size: int = 256, *, preset: str | None = None):
         if type(start_seed) is not int or start_seed < 0:
             raise ValueError('start_seed: expected a non-negative integer')
         if type(num_levels) is not int or num_levels < 0:
@@ -72,6 +90,10 @@ class LevelDistribution:
         self.num_levels = num_levels
         self._cache_size = cache_size
         self._cache: OrderedDict[int, object] = OrderedDict()
+        self.preset = preset if preset is not None else preset_name(config)
+        #: ``LevelRef`` of the level last returned by ``get``/``sample`` (or
+        #: ``None``). Bookkeeping only: it never touches an RNG.
+        self.last_ref: dict | None = None
 
     def __len__(self) -> int:
         return self.num_levels
@@ -80,6 +102,7 @@ class LevelDistribution:
         if self.num_levels and not (0 <= index < self.num_levels):
             raise IndexError(f'index {index} out of range [0, {self.num_levels})')
         seed = self.start_seed + index
+        self.last_ref = pcg_ref(seed, self.config, self.preset)
         level = self._cache.get(seed)
         if level is not None:
             self._cache.move_to_end(seed)
@@ -93,7 +116,9 @@ class LevelDistribution:
     def sample(self, rng):
         if self.num_levels:
             return self.get(_draw(rng, self.num_levels))
-        return generate_level(_draw(rng, None), self.config)
+        seed = _draw(rng, None)
+        self.last_ref = pcg_ref(seed, self.config, self.preset)
+        return generate_level(seed, self.config)
 
 
 class LevelPack:
@@ -104,6 +129,22 @@ class LevelPack:
     def __init__(self, path):
         self.path = str(path)
         self._levels = None
+        self._refs: dict[int, dict] = {}
+        #: ``LevelRef`` of the level last returned by ``get``/``sample``:
+        #: ``{"kind": "custom", "hash", "pack", "index"}`` (packs freeze levels,
+        #: so they are addressed by content, not by generator seed).
+        self.last_ref: dict | None = None
+
+    def _ref(self, index: int) -> dict:
+        ref = self._refs.get(index)
+        if ref is None:
+            from pathlib import Path
+
+            from game.level import level_hash
+            ref = {'kind': 'custom', 'hash': level_hash(self._levels[index]),
+                   'pack': Path(self.path).name, 'index': index}
+            self._refs[index] = ref
+        return dict(ref)
 
     def _load(self):
         levels = []
@@ -122,9 +163,13 @@ class LevelPack:
     def get(self, index: int):
         if self._levels is None:
             self._load()
-        return self._levels[index]
+        level = self._levels[index]
+        self.last_ref = self._ref(index % len(self._levels))
+        return level
 
     def sample(self, rng):
         if self._levels is None:
             self._load()
-        return self._levels[_draw(rng, len(self._levels))]
+        index = _draw(rng, len(self._levels))
+        self.last_ref = self._ref(index)
+        return self._levels[index]
