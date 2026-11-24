@@ -479,9 +479,14 @@ def create_app(runs_dir, *, demo: bool = False, train_python: str | None = None,
             raise ApiError(422, 'invalid_request', 'layer: visits or deaths')
         lines, key = sweep_lines(run, tag)
         if not level:
+            # Default: the most played level (visits) or the deadliest (deaths).
             counts = {}
             for x in lines:
+                if layer == 'deaths' and not x.get('death_xy'):
+                    continue
                 counts[x.get('level_hash')] = counts.get(x.get('level_hash'), 0) + 1
+            if not counts:
+                counts = {x.get('level_hash'): 1 for x in lines}
             level = max(counts, key=counts.get) if counts else ''
         ck = ('heat', run, tag, level, layer)
         hit = caches.get(ck)

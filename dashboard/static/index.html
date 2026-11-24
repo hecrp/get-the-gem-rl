@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dashboard-token" content="{{TOKEN}}">
+<title>Get the Gem · Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Cpath d='M3 0L7 3L4 7L0 4Z' fill='%235be4e9'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/css/app.css?v={{VERSION}}">
+<script type="module" src="/static/js/app.js?v={{VERSION}}"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/wall" aria-label="Get the Gem dashboard"><span class="gem-ico" aria-hidden="true"></span>Get the Gem</a>
+  <nav class="nav" aria-label="Secciones">
+    <a href="#/wall" data-page="wall">Muro</a>
+    <a href="#/runs" data-page="runs">Runs</a>
+    <a href="#/replays" data-page="replays">Replays</a>
+    <a href="#/levels" data-page="levels">Niveles</a>
+    <a href="#/operate" data-page="operate">Operar</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="demo-badge" class="badge demo" hidden>DATOS DE DEMO</span>
+  <span id="active-runs" class="indicator" title="Runs entrenando ahora">● 0 runs activos</span>
+  <span id="sse-status" class="indicator" role="status">SSE…</span>
+  <button id="theme-toggle" class="btn ghost" aria-label="Cambiar tema" title="Cambiar tema (t)">◐</button>
+  <button id="help-btn" class="btn ghost" aria-label="Atajos de teclado" title="Atajos (?)">?</button>
+</header>
+<main id="main" tabindex="-1"></main>
+<dialog id="help" aria-labelledby="help-title">
+  <h2 id="help-title">Atajos de teclado</h2>
+  <table class="kbd-table">
+    <tr><td><kbd>Espacio</kbd></td><td>Pausa / reanuda todos los reproductores</td></tr>
+    <tr><td><kbd>+</kbd> <kbd>−</kbd></td><td>Velocidad global</td></tr>
+    <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>Paso atrás / adelante (reproductor con foco)</td></tr>
+    <tr><td><kbd>n</kbd> <kbd>p</kbd></td><td>Replay siguiente / anterior (reproductor con foco)</td></tr>
+    <tr><td><kbd>l</kbd> · <kbd>c</kbd></td><td>Bucle · cámara (reproductor con foco)</td></tr>
+    <tr><td><kbd>F</kbd> / doble clic</td><td>Maximizar el tile con foco; <kbd>Esc</kbd> vuelve</td></tr>
+    <tr><td><kbd>1</kbd>…<kbd>5</kbd></td><td>Muro · Runs · Replays · Niveles · Operar</td></tr>
+    <tr><td><kbd>t</kbd></td><td>Tema claro / oscuro</td></tr>
+    <tr><td><kbd>?</kbd></td><td>Esta ayuda</td></tr>
+  </table>
+  <form method="dialog"><button class="btn">Cerrar</button></form>
+</dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
