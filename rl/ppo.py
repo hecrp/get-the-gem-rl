@@ -10,15 +10,27 @@ bootstrapped from the value of their final observation.
     # generalisation: train on 200 generated levels, evaluate on unseen seeds
     python -m rl.ppo --preset tiny --num-levels 200 --total-steps 5000000
 
-Writes ``runs/<name>/{config.json, progress.csv, eval.json, model.pt}``.
+Writes ``runs/<name>/{config.json, progress.csv, eval.json, model.pt}``, plus
+``status.json`` (state, heartbeat, progress) and ``metrics.jsonl`` (the
+``progress.csv`` columns and a few more), which older readers ignore. Opt-in:
+``--ckpt-every`` (resumable checkpoints), ``--replay-every`` (numbered replays
+of the current policy, see ``rl.rollout``), ``--resume`` and ``--group``.
+SIGTERM/SIGINT stop cleanly after the current update: checkpoint, ``model.pt``,
+a partial ``eval.json`` and ``state: "stopped"``.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import os
+import signal
+import subprocess
+import sys
 import time
+import traceback
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import gymnasium as gym
@@ -26,6 +38,8 @@ import numpy as np
 import torch
 from torch import nn
 from torch.distributions import Categorical
+
+from game.replay_store import append_jsonl, atomic_write_json
 
 from .env import GRID_CHANNELS, VEC_FIELDS, GemEnv
 
@@ -219,10 +233,217 @@ def parse_args(argv=None):
     run.add_argument('--eval-episodes', type=int, default=64)
     run.add_argument('--eval-envs', type=int, default=16)
     run.add_argument('--eval-levels', type=int, default=1000, help='held-out pcg seeds')
+    run.add_argument('--runs-dir', default=None, help='parent of the run folder (default: runs/)')
+    run.add_argument('--group', default=None,
+                     help='experiment name; runs of a group differ only in --seed')
+    obs = ap.add_argument_group('observability (all opt-in)')
+    obs.add_argument('--ckpt-every', type=int, default=0,
+                     help='updates between resumable checkpoints in ckpt/ (0 = off)')
+    obs.add_argument('--ckpt-keep', type=int, default=0,
+                     help='keep only the last K checkpoints (0 = keep all) ...')
+    obs.add_argument('--ckpt-thin', type=int, default=0,
+                     help='... plus one every T updates (0 = none)')
+    obs.add_argument('--replay-every', type=int, default=0,
+                     help='updates between replay recordings of the current policy (0 = off)')
+    obs.add_argument('--replay-n', type=int, default=8,
+                     help='replays per recording (half greedy, half sampled)')
+    obs.add_argument('--resume', nargs='?', const='latest', default=None,
+                     help='resume the run from CKPT (default: its latest checkpoint)')
     return ap.parse_args(argv)
 
 
+# Flags that may differ on --resume (operational, not part of the experiment).
+RESUME_OVERRIDES = ('total_steps', 'device', 'threads', 'log_every', 'eval_every',
+                    'ckpt_every', 'ckpt_keep', 'ckpt_thin', 'replay_every', 'replay_n',
+                    'runs_dir', 'eval_episodes', 'eval_envs')
+
+
+def _explicit_flags(argv) -> set:
+    """Destinations given explicitly on the command line (``--flag`` or
+    ``--flag=value``), used to tell overrides from defaults on ``--resume``."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    return {tok[2:].split('=', 1)[0].replace('-', '_')
+            for tok in argv if tok.startswith('--')}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _git_commit():
+    try:
+        return subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT,
+                              capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+class StopRequested:
+    """SIGTERM/SIGINT set a flag; the loop stops after the current update. A
+    second signal falls back to the default behaviour (immediate exit)."""
+
+    def __init__(self):
+        self.signal = None
+        self._previous = {}
+
+    def install(self):
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                self._previous[sig] = signal.signal(sig, self._handler)
+            except ValueError:              # not in the main thread
+                pass
+
+    def _handler(self, signum, frame):
+        if self.signal is not None:
+            signal.signal(signum, self._previous.get(signum, signal.SIG_DFL))
+            raise KeyboardInterrupt
+        self.signal = signum
+        print(f'signal {signum}: stopping after the current update', flush=True)
+
+    def restore(self):
+        for sig, handler in self._previous.items():
+            signal.signal(sig, handler)
+
+    def __bool__(self):
+        return self.signal is not None
+
+
+def _rng_state():
+    state = {'torch': torch.get_rng_state(), 'numpy': np.random.get_state()}
+    if torch.backends.mps.is_available():
+        try:
+            state['mps'] = torch.mps.get_rng_state()
+        except (AttributeError, RuntimeError):
+            pass
+    if torch.cuda.is_available():
+        state['cuda'] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _set_rng_state(state):
+    torch.set_rng_state(state['torch'])
+    np.random.set_state(state['numpy'])
+    if 'mps' in state and torch.backends.mps.is_available():
+        try:
+            torch.mps.set_rng_state(state['mps'])
+        except (AttributeError, RuntimeError):
+            pass
+    if 'cuda' in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state['cuda'])
+
+
+def _atomic_torch_save(obj, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def _prune_checkpoints(ckpt_dir: Path, keep: int, thin: int):
+    if keep <= 0:
+        return
+    found = sorted(ckpt_dir.glob('update_*.pt'))
+    for path in found[:-keep]:
+        u = int(path.stem.split('_')[1])
+        if thin and u % thin == 0:
+            continue
+        path.unlink(missing_ok=True)
+
+
+def latest_checkpoint(run_dir: Path):
+    found = sorted((run_dir / 'ckpt').glob('update_*.pt'))
+    return found[-1] if found else None
+
+
+def _to_cpu(obj):
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    if isinstance(obj, dict):
+        return {k: _to_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_cpu(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_to_cpu(v) for v in obj)
+    return obj
+
+
+def _run_name(args):
+    return args.name or (f'{args.preset or "levels" + args.levels}'
+                         f'_n{args.num_levels if args.preset else ""}_s{args.seed}')
+
+
+def _replay_refs(args, update, n):
+    """Deterministic levels for ``--replay-every``: training levels, plus
+    held-out seeds (every other replay) in pcg mode."""
+    from .rollout import builtin_ref, preset_refs
+    refs = []
+    for k in range(n):
+        mix = (update * 7919 + k * 104729)
+        if args.preset is None:
+            nums = _parse_levels(args.levels)
+            refs.append(builtin_ref(nums[(update + k) % len(nums)]))
+        elif k % 2 == 1:
+            refs += preset_refs(args.preset, TEST_START_SEED + mix % max(1, args.eval_levels), 1)
+        elif args.num_levels:
+            refs += preset_refs(args.preset, args.start_seed + mix % args.num_levels, 1)
+        else:
+            refs += preset_refs(args.preset, mix % TEST_START_SEED, 1)
+    return refs
+
+
+def _record_policy_replays(agent, cpu_agent, args, update, env_steps, out, runs_root,
+                           n, ckpt_rel):
+    """Numbered replays of the current policy (CPU copy; private RNG)."""
+    from .rollout import Policy, record_replays
+    cpu_agent.load_state_dict({k: v.detach().cpu() for k, v in agent.state_dict().items()})
+    cpu_agent.eval()
+    policy = Policy(cpu_agent, vars(args), str(out / 'model.pt'),
+                    {'update': update, 'env_steps': env_steps})
+    source = {'kind': 'checkpoint', 'update': update, 'env_steps': env_steps,
+              'ckpt': ckpt_rel}
+    refs = _replay_refs(args, update, n)
+    greedy = [r for k, r in enumerate(refs) if (k // (2 if args.preset else 1)) % 2 == 0]
+    sampled = [r for k, r in enumerate(refs) if (k // (2 if args.preset else 1)) % 2 == 1]
+    recs = []
+    for flag, batch in ((True, greedy), (False, sampled)):
+        if batch:
+            recs += record_replays(policy, batch, out, runs_root, greedy=flag,
+                                   seed=args.seed * 1_000_003 + update, n_envs=len(batch),
+                                   source=source, tags=['train-replay'])
+    return recs
+
+
 def train(args):
+    explicit = getattr(args, '_explicit', set())
+    runs_root = Path(args.runs_dir) if args.runs_dir else ROOT / 'runs'
+    resume_ckpt = None
+    if args.resume is not None:
+        name = _run_name(args)
+        run_dir = runs_root / name
+        if args.resume == 'latest':
+            path = latest_checkpoint(run_dir)
+            if path is None:
+                raise SystemExit(f'--resume: no checkpoint in {run_dir / "ckpt"}')
+        else:
+            path = Path(args.resume)
+            path = path if path.is_absolute() else run_dir / path
+        resume_ckpt = torch.load(path, map_location='cpu', weights_only=False)
+        # The experiment is the checkpoint's; only operational flags given
+        # explicitly now override it.
+        keep = {k: getattr(args, k) for k in ('resume', 'name', 'runs_dir')}
+        for key, value in resume_ckpt['config'].items():
+            if key.startswith('_'):
+                continue
+            if key in RESUME_OVERRIDES and key in explicit:
+                continue
+            setattr(args, key, value)
+        for key, value in keep.items():
+            setattr(args, key, value)
+        args.name = name
+        resumed_from = str(path.relative_to(run_dir)) if path.is_relative_to(run_dir) else str(path)
+    else:
+        resumed_from = None
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     torch.set_num_threads(args.threads)
@@ -230,11 +451,11 @@ def train(args):
                           'mps' if torch.backends.mps.is_available() else
                           'cuda' if torch.cuda.is_available() else 'cpu')
     print(f'device: {device}', flush=True)
-    name = args.name or (f'{args.preset or "levels" + args.levels}'
-                         f'_n{args.num_levels if args.preset else ""}_s{args.seed}')
-    out = ROOT / 'runs' / name
+    name = _run_name(args)
+    out = runs_root / name
     out.mkdir(parents=True, exist_ok=True)
-    (out / 'config.json').write_text(json.dumps(vars(args), indent=2))
+    config = {k: v for k, v in vars(args).items() if not k.startswith('_')}
+    (out / 'config.json').write_text(json.dumps(config, indent=2))
 
     envs = make_vec_env(level_source(args), args.num_envs, args)
     grid_shape = (len(GRID_CHANNELS), 21, 31)
@@ -253,112 +474,256 @@ def train(args):
     buf_done = torch.zeros((T, N))
     buf_val = torch.zeros((T, N))
 
+    start_update, episodes, seconds_before = 0, 0, 0.0
+    recent = deque(maxlen=200)            # (return, won, has_gem)
+    recent_len = deque(maxlen=200)        # engine steps per finished episode
+    if resume_ckpt is not None:
+        agent.load_state_dict(resume_ckpt['model'])
+        optim.load_state_dict(resume_ckpt['optimizer'])
+        start_update = int(resume_ckpt['update'])
+        episodes = int(resume_ckpt.get('episodes', 0))
+        seconds_before = float(resume_ckpt.get('train_seconds', 0.0))
+        recent.extend(tuple(x) for x in resume_ckpt.get('recent', ()))
+        recent_len.extend(resume_ckpt.get('recent_len', ()))
+
     # Rollout buffers live on the CPU; the network runs on ``device``.
-    obs, _ = envs.reset(seed=args.seed)
+    # On resume the envs restart (episodes in flight are not checkpointed),
+    # with a seed that depends on the update so levels do not repeat.
+    obs, _ = envs.reset(seed=args.seed if resume_ckpt is None else args.seed + start_update)
+    if resume_ckpt is not None and 'rng' in resume_ckpt:
+        _set_rng_state(resume_ckpt['rng'])
     grid, vec = to_tensors(obs, 'cpu')
     ep_ret = np.zeros(N)
-    recent = deque(maxlen=200)            # (return, won, has_gem)
-    log = open(out / 'progress.csv', 'w', newline='')
-    writer = csv.writer(log)
-    writer.writerow(['update', 'env_steps', 'sps', 'episodes', 'return', 'success',
-                     'gem_rate', 'pg_loss', 'v_loss', 'entropy', 'approx_kl',
-                     'eval_train', 'eval_test'])
-    episodes, start = 0, time.perf_counter()
+    header = ['update', 'env_steps', 'sps', 'episodes', 'return', 'success',
+              'gem_rate', 'pg_loss', 'v_loss', 'entropy', 'approx_kl',
+              'eval_train', 'eval_test']
+    if resume_ckpt is not None and (out / 'progress.csv').exists():
+        log = open(out / 'progress.csv', 'a', newline='')
+        writer = csv.writer(log)
+    else:
+        log = open(out / 'progress.csv', 'w', newline='')
+        writer = csv.writer(log)
+        writer.writerow(header)
+        if (out / 'metrics.jsonl').exists():
+            (out / 'metrics.jsonl').unlink()
+    start = time.perf_counter()
+    started_at = now_iso()
+    status = {'schema': 1, 'name': name, 'group': args.group, 'state': 'running',
+              'pid': os.getpid(), 'started_at': started_at, 'updated_at': started_at,
+              'update': start_update, 'updates_total': updates,
+              'env_steps': start_update * batch, 'total_steps': args.total_steps,
+              'sps': None, 'device': str(device), 'git_commit': _git_commit(),
+              'error': None, 'resumed_from': resumed_from, 'log_interval_s': None,
+              'last_ckpt': None, 'ckpt_every': args.ckpt_every,
+              'replay_every': args.replay_every}
+    last_status = time.time()
 
-    for update in range(1, updates + 1):
-        frac = 1.0 - (update - 1) / updates
-        optim.param_groups[0]['lr'] = frac * args.lr
-        for t in range(T):
-            buf_grid[t], buf_vec[t] = grid, vec
-            with torch.no_grad():
-                action, logp, _, value = agent.act(grid.to(device), vec.to(device))
-            action = action.cpu()
-            buf_act[t], buf_logp[t], buf_val[t] = action, logp.cpu(), value.cpu()
-            obs, reward, term, trunc, info = envs.step(action.numpy())
-            ep_ret += reward
-            reward = reward.astype(np.float32)
-            done = term | trunc
-            for i in np.flatnonzero(done):
-                fi = info['final_info']
-                recent.append((ep_ret[i], bool(fi['is_success'][i]), bool(fi['has_gem'][i])))
-                ep_ret[i] = 0.0
-                episodes += 1
-                if trunc[i] and not term[i]:      # time limit: bootstrap
-                    fo = final_obs_at(info['final_obs'], i)
-                    with torch.no_grad():
-                        fg, fv = to_tensors({k: fo[k][None] for k in ('grid', 'vec')}, device)
-                        reward[i] += args.gamma * agent.value(fg, fv).item()
-            buf_rew[t] = torch.as_tensor(reward)
-            buf_done[t] = torch.as_tensor(done, dtype=torch.float32)
-            grid, vec = to_tensors(obs, 'cpu')
+    def write_status(**changes):
+        nonlocal last_status
+        t = time.time()
+        if changes.get('state', 'running') == 'running':
+            status['log_interval_s'] = round(t - last_status, 3)
+        last_status = t
+        status.update(changes, updated_at=now_iso())
+        atomic_write_json(out / 'status.json', status)
 
-        with torch.no_grad():
-            next_value = agent.value(grid.to(device), vec.to(device)).cpu()
-        adv = compute_gae(buf_rew, buf_done, buf_val, next_value,
-                          args.gamma, args.gae_lambda)
-        ret = adv + buf_val
+    write_status()
+    stop = StopRequested()
+    stop.install()
+    ckpt_dir = out / 'ckpt'
+    cpu_agent = None
+    replay_n, replay_seconds = args.replay_n, 0.0
+    update = start_update
+    last_logged = None
 
-        b_grid = buf_grid.reshape(batch, *grid_shape).to(device)
-        b_vec = buf_vec.reshape(batch, -1).to(device)
-        b_act, b_logp = buf_act.reshape(-1).to(device), buf_logp.reshape(-1).to(device)
-        b_adv, b_ret = adv.reshape(-1).to(device), ret.reshape(-1).to(device)
-        for _ in range(args.epochs):
-            perm = torch.randperm(batch, device=device)
-            for s in range(0, batch, mb):
-                idx = perm[s:s + mb]
-                _, logp, ent, val = agent.act(b_grid[idx], b_vec[idx], b_act[idx])
-                ratio = (logp - b_logp[idx]).exp()
-                a = b_adv[idx]
-                a = (a - a.mean()) / (a.std() + 1e-8)
-                pg = torch.max(-a * ratio, -a * ratio.clamp(1 - args.clip, 1 + args.clip)).mean()
-                v_loss = 0.5 * ((val - b_ret[idx]) ** 2).mean()
-                entropy = ent.mean()
-                loss = pg + args.vf_coef * v_loss - args.ent_coef * entropy
-                optim.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                optim.step()
+    def save_checkpoint(u):
+        path = ckpt_dir / f'update_{u:06d}.pt'
+        _atomic_torch_save({
+            'model': {k: v.cpu() for k, v in agent.state_dict().items()},
+            'optimizer': _to_cpu(optim.state_dict()),
+            'update': u, 'env_steps': u * batch, 'episodes': episodes,
+            'updates_total': updates, 'recent': list(recent), 'recent_len': list(recent_len),
+            'config': config, 'rng': _rng_state(),
+            'train_seconds': seconds_before + time.perf_counter() - start}, path)
+        _prune_checkpoints(ckpt_dir, args.ckpt_keep, args.ckpt_thin)
+        status['last_ckpt'] = str(path.relative_to(out))
+        return str(path.relative_to(out))
+
+    try:
+        for update in range(start_update + 1, updates + 1):
+            frac = 1.0 - (update - 1) / updates
+            optim.param_groups[0]['lr'] = frac * args.lr
+            for t in range(T):
+                buf_grid[t], buf_vec[t] = grid, vec
                 with torch.no_grad():
-                    approx_kl = ((ratio - 1) - (logp - b_logp[idx])).mean().item()
+                    action, logp, _, value = agent.act(grid.to(device), vec.to(device))
+                action = action.cpu()
+                buf_act[t], buf_logp[t], buf_val[t] = action, logp.cpu(), value.cpu()
+                obs, reward, term, trunc, info = envs.step(action.numpy())
+                ep_ret += reward
+                reward = reward.astype(np.float32)
+                done = term | trunc
+                for i in np.flatnonzero(done):
+                    fi = info['final_info']
+                    recent.append((ep_ret[i], bool(fi['is_success'][i]), bool(fi['has_gem'][i])))
+                    recent_len.append(int(fi['step_count'][i]))
+                    ep_ret[i] = 0.0
+                    episodes += 1
+                    if trunc[i] and not term[i]:      # time limit: bootstrap
+                        fo = final_obs_at(info['final_obs'], i)
+                        with torch.no_grad():
+                            fg, fv = to_tensors({k: fo[k][None] for k in ('grid', 'vec')}, device)
+                            reward[i] += args.gamma * agent.value(fg, fv).item()
+                buf_rew[t] = torch.as_tensor(reward)
+                buf_done[t] = torch.as_tensor(done, dtype=torch.float32)
+                grid, vec = to_tensors(obs, 'cpu')
 
-        eval_train = eval_test = ''
-        if args.eval_every and (update % args.eval_every == 0):
-            if args.preset is not None:
-                eval_train = evaluate(agent, level_source(args), args.eval_episodes,
-                                      args, device)['success_rate']
-                eval_test = evaluate(agent, level_source(args, test=True),
-                                     args.eval_episodes, args, device)['success_rate']
-            else:
-                eval_train = evaluate(agent, _parse_levels(args.levels),
-                                      args.eval_episodes, args, device)['success_rate']
-        if update % args.log_every == 0 or update == updates or eval_train != '':
+            with torch.no_grad():
+                next_value = agent.value(grid.to(device), vec.to(device)).cpu()
+            adv = compute_gae(buf_rew, buf_done, buf_val, next_value,
+                              args.gamma, args.gae_lambda)
+            ret = adv + buf_val
+
+            b_grid = buf_grid.reshape(batch, *grid_shape).to(device)
+            b_vec = buf_vec.reshape(batch, -1).to(device)
+            b_act, b_logp = buf_act.reshape(-1).to(device), buf_logp.reshape(-1).to(device)
+            b_adv, b_ret = adv.reshape(-1).to(device), ret.reshape(-1).to(device)
+            for _ in range(args.epochs):
+                perm = torch.randperm(batch, device=device)
+                for s in range(0, batch, mb):
+                    idx = perm[s:s + mb]
+                    _, logp, ent, val = agent.act(b_grid[idx], b_vec[idx], b_act[idx])
+                    ratio = (logp - b_logp[idx]).exp()
+                    a = b_adv[idx]
+                    a = (a - a.mean()) / (a.std() + 1e-8)
+                    pg = torch.max(-a * ratio, -a * ratio.clamp(1 - args.clip, 1 + args.clip)).mean()
+                    v_loss = 0.5 * ((val - b_ret[idx]) ** 2).mean()
+                    entropy = ent.mean()
+                    loss = pg + args.vf_coef * v_loss - args.ent_coef * entropy
+                    optim.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                    optim.step()
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1) - (logp - b_logp[idx])).mean().item()
+
+            eval_train = eval_test = ''
+            if args.eval_every and (update % args.eval_every == 0):
+                if args.preset is not None:
+                    eval_train = evaluate(agent, level_source(args), args.eval_episodes,
+                                          args, device)['success_rate']
+                    eval_test = evaluate(agent, level_source(args, test=True),
+                                         args.eval_episodes, args, device)['success_rate']
+                else:
+                    eval_train = evaluate(agent, _parse_levels(args.levels),
+                                          args.eval_episodes, args, device)['success_rate']
             steps = update * batch
-            sps = steps / (time.perf_counter() - start)
-            r = np.array(recent, dtype=float) if recent else np.zeros((1, 3))
-            row = [update, steps, round(sps), episodes, r[:, 0].mean(), r[:, 1].mean(),
-                   r[:, 2].mean(), pg.item(), v_loss.item(), entropy.item(), approx_kl,
-                   eval_train, eval_test]
-            writer.writerow(row)
-            log.flush()
-            print(f'upd {update}/{updates} steps {steps} sps {sps:.0f} '
-                  f'ret {r[:, 0].mean():.3f} win {r[:, 1].mean():.2f} gem {r[:, 2].mean():.2f} '
-                  f'ent {entropy.item():.2f} kl {approx_kl:.4f}'
-                  + (f' eval {eval_train}/{eval_test}' if eval_train != '' else ''),
-                  flush=True)
+            if update % args.log_every == 0 or update == updates or eval_train != '':
+                sps = (update - start_update) * batch / (time.perf_counter() - start)
+                r = np.array(recent, dtype=float) if recent else np.zeros((1, 3))
+                row = [update, steps, round(sps), episodes, r[:, 0].mean(), r[:, 1].mean(),
+                       r[:, 2].mean(), pg.item(), v_loss.item(), entropy.item(), approx_kl,
+                       eval_train, eval_test]
+                writer.writerow(row)
+                log.flush()
+                last_logged = update
+                print(f'upd {update}/{updates} steps {steps} sps {sps:.0f} '
+                      f'ret {r[:, 0].mean():.3f} win {r[:, 1].mean():.2f} gem {r[:, 2].mean():.2f} '
+                      f'ent {entropy.item():.2f} kl {approx_kl:.4f}'
+                      + (f' eval {eval_train}/{eval_test}' if eval_train != '' else ''),
+                      flush=True)
+                rec = dict(zip(header, row))
+                rec.update({k: (None if v == '' else v) for k, v in
+                            (('eval_train', eval_train), ('eval_test', eval_test))})
+                rec.update(
+                    t=round(seconds_before + time.perf_counter() - start, 3),
+                    lr=optim.param_groups[0]['lr'],
+                    ep_len_mean=float(np.mean(recent_len)) if recent_len else None,
+                    action_hist=torch.bincount(buf_act.reshape(-1), minlength=6).tolist(),
+                    time_left_frac=float(buf_vec[:, :, 11].mean()))
+                append_jsonl(out / 'metrics.jsonl', [rec])
+                write_status(update=update, env_steps=steps, sps=round(sps))
 
+            ckpt_rel = None
+            if args.ckpt_every and update % args.ckpt_every == 0:
+                ckpt_rel = save_checkpoint(update)
+            if args.replay_every and update % args.replay_every == 0 and replay_n > 0:
+                if cpu_agent is None:
+                    cpu_agent = Agent(grid_shape, len(VEC_FIELDS), 6)
+                t0 = time.perf_counter()
+                _record_policy_replays(agent, cpu_agent, args, update, steps, out, runs_root,
+                                       replay_n, ckpt_rel)
+                replay_seconds += time.perf_counter() - t0
+                elapsed = time.perf_counter() - start
+                if replay_seconds > 0.03 * elapsed and replay_n > 2:
+                    replay_n = max(2, replay_n // 2)
+                    print(f'replays took {100 * replay_seconds / elapsed:.1f}% of training '
+                          f'time; --replay-n reduced to {replay_n}', flush=True)
+            if stop:
+                break
+    except BaseException as exc:
+        log.close()
+        envs.close()
+        stop.restore()
+        last = traceback.format_exception_only(type(exc), exc)[-1].strip()
+        write_status(state='stopped' if isinstance(exc, KeyboardInterrupt) else 'failed',
+                     error=last)
+        raise
+
+    stop.restore()
     log.close()
     envs.close()
+    train_seconds = seconds_before + time.perf_counter() - start
     torch.save({'model': {k: v.cpu() for k, v in agent.state_dict().items()},
-                'config': vars(args)}, out / 'model.pt')
+                'config': config}, out / 'model.pt')
+    if stop:
+        if status.get('last_ckpt') != f'ckpt/update_{update:06d}.pt':
+            save_checkpoint(update)
+        result = {'partial': True, 'stopped_at_update': update, 'updates_total': updates,
+                  'env_steps': update * batch, 'train_seconds': train_seconds,
+                  'last_logged_update': last_logged}
+        (out / 'eval.json').write_text(json.dumps(result, indent=2))
+        write_status(state='stopped', update=update, env_steps=update * batch)
+        print(json.dumps(result, indent=2))
+        return result
     result = evaluate_all(agent, args, device)
-    result['train_seconds'] = time.perf_counter() - start
+    result['train_seconds'] = train_seconds
     (out / 'eval.json').write_text(json.dumps(result, indent=2))
+    write_status(state='finished')
     print(json.dumps(result, indent=2))
     return result
 
 
+def _mark_failed(args, exc):
+    """Record a failure that happened before the training loop owned
+    ``status.json`` (bad arguments, environment construction, ...)."""
+    runs_root = Path(args.runs_dir) if args.runs_dir else ROOT / 'runs'
+    out = runs_root / _run_name(args)
+    if not out.is_dir():
+        return
+    path = out / 'status.json'
+    try:
+        status = json.loads(path.read_text())
+    except (OSError, ValueError):
+        status = {'schema': 1, 'name': out.name, 'group': args.group, 'pid': os.getpid(),
+                  'started_at': now_iso()}
+    if status.get('state') in ('failed', 'stopped', 'finished') and status.get('pid') == os.getpid():
+        return
+    status.update(state='failed', updated_at=now_iso(), pid=os.getpid(),
+                  error=traceback.format_exception_only(type(exc), exc)[-1].strip())
+    atomic_write_json(path, status)
+
+
 def main(argv=None):
-    train(parse_args(argv))
+    args = parse_args(argv)
+    args._explicit = _explicit_flags(argv)
+    try:
+        train(args)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as exc:
+        _mark_failed(args, exc)
+        raise
 
 
 if __name__ == '__main__':
