@@ -9,7 +9,7 @@ levels/packs/*.jsonl
 outputs/
 runs/
 
-# Internal: specs, design docs and progress log are managed outside the repo.
+# Internal: specs, reports and progress log are managed outside the repo.
+# (docs/ is public documentation and is tracked.)
 spec/
-docs/
 PROGRESS.md
